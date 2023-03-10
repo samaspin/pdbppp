@@ -9,6 +9,8 @@ more details on pdb++ features.
 
 from __future__ import print_function
 
+import bdb
+import cmd
 import sys
 import os.path
 import inspect
@@ -135,9 +137,9 @@ def rebind_globals(func, newglobals):
 
 
 class DefaultConfig(object):
-    prompt = '(Pdb++) '
+    prompt = '(Pdb+++) '
     highlight = True
-    sticky_by_default = False
+    sticky_by_default = True
 
     # Pygments.
     use_pygments = None  # Tries to use it if available.
@@ -374,6 +376,15 @@ class Pdb(pdb.Pdb, ConfigurableClass, object):
         self.show_hidden_frames = False
         self._hidden_frames = []
 
+        #################################################
+        # step check set-up
+        # self.prev_val = 'UNSET'
+        # self.expr = 'a'
+        # self.keep_stepping = False
+        self.stepcheck_expr = 'a'
+        self.stepcheck_val = 1
+        #################################################
+
         # Sticky mode.
         self.sticky = self.config.sticky_by_default
         self.first_time_sticky = self.sticky
@@ -495,7 +506,21 @@ class Pdb(pdb.Pdb, ConfigurableClass, object):
         self.forget()
 
     def break_here(self, frame):
+        print('*** break_here!')
+        print(frame.f_code)
+        print(frame.f_lineno)
+        #
+        # if self.stepcheck_expr:
+        #     result = eval(self.stepcheck_expr, frame.f_globals, frame.f_locals)
+        #     if result != self.stepcheck_val:
+        #         print('step check triggered')
+        #         return True
+
+        # for frame_info in inspect.stack():
+        #     print(frame_info)
+
         ret = super(Pdb, self).break_here(frame)
+
         if ret:
             # Skip clearing screen if invoked via breakpoint, which e.g.
             # might execute/display output from commands.
@@ -1805,6 +1830,7 @@ except for when using the function decorator.
             self.print_stack_entry(self.stack[self.curindex])
 
     def preloop(self):
+        print('preloop')
         self._print_if_sticky()
 
         display_list = self._get_display_list()
@@ -1815,6 +1841,7 @@ except for when using the function decorator.
             # whose fields are changed to be displayed
             if newvalue is not oldvalue or newvalue != oldvalue:
                 display_list[expr] = newvalue
+                print('@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@')
                 print('%s: %r --> %r' % (expr, oldvalue, newvalue),
                       file=self.stdout)
 
@@ -2200,6 +2227,218 @@ except for when using the function decorator.
                 break
             removed_bdb_context = removed_bdb_context.__context__
 
+    ###############################################################################
+    """ 
+    this is my attempt to do something that will keep stepping and checking a value and only stop if the value changes
+    """
+    # def do_stepcheck(self, arg):
+    #     print('stepcheck')
+    #     if self.prev_val == 'UNSET':
+    #         self.prev_val = eval(self.expr, self.curframe.f_globals, self.curframe_locals)
+    #         print(f'initial: {self.prev_val}')
+    #
+    #     current_val = eval(self.expr, self.curframe.f_globals, self.curframe_locals)
+    #     print(f'initial: {self.prev_val}')
+    #     print(f'current: {current_val}')
+    #     if current_val != self.prev_val:
+    #         print('changed')
+    #         self.keep_stepping = False
+    #     else:
+    #         print('same')
+    #     self.set_step()
+    #     return 1
+    #
+    # do_sc = do_stepcheck
+    #
+    # def onecmd(self, line):
+    #     """Interpret the argument as though it had been typed in response
+    #     to the prompt.
+    #
+    #     Checks whether this line is typed at the normal prompt or in
+    #     a breakpoint command list definition.
+    #     """
+    #     if not self.commands_defining:
+    #         if line.startswith('sc') or line.startswith('stepcheck'):
+    #             print('co')
+    #             self.keep_stepping = True
+    #
+    #             cmd.Cmd.onecmd(self, line)
+    #             print('once')
+    #             cmd.Cmd.onecmd(self, line)
+    #             print('twice')
+    #             # while self.keep_stepping:
+    #             #     print(self.keep_stepping)
+    #             #     cmd.Cmd.onecmd(self, line)
+    #             return 1
+    #         else:
+    #             return cmd.Cmd.onecmd(self, line)
+    #     else:
+    #         return self.handle_command_def(line)
+
+
+    def do_stepcheck(self, arg):
+        # this is copying the behavior from do_until and set_until
+        self._set_stopinfo(self.curframe, self.curframe, -1)
+        return 1
+
+    # def dispatch_line(self, frame):
+    #     """Invoke user function and return trace function for line event.
+    #
+    #     If the debugger stops on the current line, invoke
+    #     self.user_line(). Raise BdbQuit if self.quitting is set.
+    #     Return self.trace_dispatch to continue tracing in this scope.
+    #     """
+    #     print('dispatch line!!')
+    #     if self.stop_here(frame) or self.break_here(frame):
+    #         self.user_line(frame)
+    #         if self.quitting: raise bdb.BdbQuit
+    #     return self.trace_dispatch
+
+    def dispatch_call(self, frame, arg):
+        """Invoke user function and return trace function for call event.
+
+        If the debugger stops on this function call, invoke
+        self.user_call(). Raise BbdQuit if self.quitting is set.
+        Return self.trace_dispatch to continue tracing in this scope.
+        """
+        print('dispatch call')
+        # XXX 'arg' is no longer used
+        if self.botframe is None:
+            # First call of dispatch since reset()
+            self.botframe = frame.f_back # (CT) Note that this may also be None!
+            return self.trace_dispatch
+        if not (self.stop_here(frame) or self.break_anywhere(frame)):
+            # No need to trace this function
+            return # None
+        # Ignore call events in generator except when stepping.
+        if self.stopframe and frame.f_code.co_flags & bdb.GENERATOR_AND_COROUTINE_FLAGS:
+            return self.trace_dispatch
+        self.user_call(frame, arg)
+        if self.quitting: raise bdb.BdbQuit
+        return self.trace_dispatch
+
+    def break_here(self, frame):
+        """Return True if there is an effective breakpoint for this line.
+
+        Check for line or function breakpoint and if in effect.
+        Delete temporary breakpoints if effective() says to.
+        """
+        print('break here')
+
+        if self.stepcheck_expr is not None:
+            result = eval(self.stepcheck_expr, frame.f_globals, frame.f_locals)
+            if result != self.stepcheck_val:
+                print('STEP CHECK BREAK (break here)')
+                return True
+
+        filename = self.canonic(frame.f_code.co_filename)
+        if filename not in self.breaks:
+            return False
+        lineno = frame.f_lineno
+        if lineno not in self.breaks[filename]:
+            # The line itself has no breakpoint, but maybe the line is the
+            # first line of a function with breakpoint set by function name.
+            lineno = frame.f_code.co_firstlineno
+            if lineno not in self.breaks[filename]:
+                return False
+
+        # flag says ok to delete temp. bp
+        (bp, flag) = effective(filename, lineno, frame)
+        if bp:
+            self.currentbp = bp.number
+            if (flag and bp.temporary):
+                self.do_clear(str(bp.number))
+            return True
+        else:
+            return False
+
+    def stop_here(self, frame):
+        "Return True if frame is below the starting frame in the stack."
+        # (CT) stopframe may now also be None, see dispatch_call.
+        # (CT) the former test for None is therefore removed from here.
+        print('stop here')
+
+        if self.stepcheck_expr is not None:
+            result = eval(self.stepcheck_expr, frame.f_globals, frame.f_locals)
+            if result != self.stepcheck_val:
+                print('STEP CHECK BREAK (stop here)')
+                return True
+
+
+        if self.skip and \
+               self.is_skipped_module(frame.f_globals.get('__name__')):
+            return False
+        if frame is self.stopframe:
+            if self.stoplineno == -1:
+                return False
+            return frame.f_lineno >= self.stoplineno
+        if not self.stopframe:
+            return True
+        return False
+
+    def set_continue(self):
+        """Stop only at breakpoints or when finished.
+
+        If there are no breakpoints, set the system trace function to None.
+        """
+        # Don't stop except at breakpoints or when finished
+        self._set_stopinfo(self.botframe, None, -1)
+        if not self.breaks and not self.stepcheck_expr:
+            # no breakpoints; run without debugger overhead
+            sys.settrace(None)
+            frame = sys._getframe().f_back
+            while frame and frame is not self.botframe:
+                del frame.f_trace
+                frame = frame.f_back
+
+    #-----------------------------
+    # def stop_here(self, frame):
+    #     "Return True if frame is below the starting frame in the stack."
+    #     # (CT) stopframe may now also be None, see dispatch_call.
+    #     # (CT) the former test for None is therefore removed from here.
+    #     print('STOP HERE????')
+    #     print(frame.f_code.co_filename)
+    #     print(frame.f_lineno)
+    #
+    #     if self.stepcheck_expr:
+    #         result = eval(self.stepcheck_expr, frame.f_globals, frame.f_locals)
+    #         if result != self.stepcheck_val:
+    #             print('step check triggered by stop_here')
+    #             return True
+    #
+    #     # print(frame.f_code)
+    #     # print(frame.f_lineno)
+    #     if self.skip and \
+    #            self.is_skipped_module(frame.f_globals.get('__name__')):
+    #         return False
+    #     if frame is self.stopframe:
+    #         if self.stoplineno == -1:
+    #             return False
+    #         return frame.f_lineno >= self.stoplineno
+    #     if not self.stopframe:
+    #         return True
+    #     return False
+
+    # def user_line(self, frame):
+    #     # Print the current function name and line number
+    #     code = frame.f_code
+    #     print(f"Executing line {frame.f_lineno} in {code.co_filename}::{code.co_name}")
+    #     # Call the parent method to handle breakpoints and tracing
+    #     return super(Pdb, self).user_line(frame)
+
+    # def set_trace(self, frame=None):
+    #     # Set the tracing function to be called for each line of code
+    #     if frame is None:
+    #         frame = sys._getframe().f_back
+    #     self.botframe = frame
+    #     sys.settrace(self.trace_dispatch)
+    #
+    # def trace_dispatch(self, frame, event, arg):
+    #     # Handle tracing events
+    #     if event == "line":
+    #         self.user_line(frame)
+    #     return self.trace_dispatch
+    ###############################################################################
 
 # simplified interface
 
