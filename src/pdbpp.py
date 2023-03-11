@@ -2301,15 +2301,22 @@ except for when using the function decorator.
         self.user_call(). Raise BbdQuit if self.quitting is set.
         Return self.trace_dispatch to continue tracing in this scope.
         """
-        print('dispatch call')
+
         # XXX 'arg' is no longer used
         if self.botframe is None:
             # First call of dispatch since reset()
             self.botframe = frame.f_back # (CT) Note that this may also be None!
             return self.trace_dispatch
-        if not (self.stop_here(frame) or self.break_anywhere(frame)):
-            # No need to trace this function
-            return # None
+
+        ############################################################
+        # REMOVE THIS SO WE RUN STOP_HERE MORE OFTEN
+        
+
+        # if not (self.stop_here(frame) or self.break_anywhere(frame)):
+        #     # No need to trace this function
+        #     return # None
+
+
         # Ignore call events in generator except when stepping.
         if self.stopframe and frame.f_code.co_flags & bdb.GENERATOR_AND_COROUTINE_FLAGS:
             return self.trace_dispatch
@@ -2391,6 +2398,12 @@ except for when using the function decorator.
                 del frame.f_trace
                 frame = frame.f_back
 
+
+    def break_anywhere(self, frame):
+        """Return True if there is any breakpoint for frame's filename.
+        """
+        print('break anywhere!')
+        return self.canonic(frame.f_code.co_filename) in self.breaks
     #-----------------------------
     # def stop_here(self, frame):
     #     "Return True if frame is below the starting frame in the stack."
